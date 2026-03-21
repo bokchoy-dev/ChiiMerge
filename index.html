@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Chiikawa 合成大對決 - 寬限期版</title>
+    <style>
+        body { margin: 0; padding: 0; background-color: #fce4ec; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; font-family: 'Arial', sans-serif; user-select: none; -webkit-tap-highlight-color: transparent; }
+        #game-container { position: relative; width: 375px; height: 667px; background-color: white; border: 5px solid #f8bbd0; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.2); overflow: hidden; touch-action: none; }
+        #game-canvas { width: 100%; height: 100%; display: block; }
+        #score-board { position: absolute; top: 10px; left: 10px; font-size: 24px; color: #ec407a; font-weight: bold; z-index: 10; pointer-events: none; text-shadow: 1px 1px 0 white; }
+        #limit-line { position: absolute; top: 110px; left: 0; width: 100%; height: 2px; background-color: rgba(255, 0, 0, 0.3); border-style: dashed; z-index: 5; }
+        #end-screen { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.8); color: white; flex-direction: column; justify-content: center; align-items: center; z-index: 20; }
+        #restart-btn { padding: 12px 24px; font-size: 20px; background-color: #ec407a; color: white; border: none; border-radius: 8px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="score-board">分數: 0</div>
+    <div id="limit-line"></div>
+    <div id="end-screen">
+        <h1>遊戲結束嗚呀!</h1>
+        <p>最終分數: <span id="final-score">0</span></p>
+        <button id="restart-btn" onclick="location.reload()">再玩一次</button>
+    </div>
+    <canvas id="game-canvas"></canvas>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+
+<script>
+    const SCALE = 1.25; 
+    const CONF = {
+        width: 375, height: 667, limitY: 110,
+        levels: [
+            { r: 15*SCALE, score: 1, img: '1.png', color: '#FFB7C5', name: '星星' },
+            { r: 22*SCALE, score: 2, img: '2.png', color: '#F8BBD0', name: '睡衣' },
+            { r: 30*SCALE, score: 4, img: '3.png', color: '#F48FB1', name: '甲蟲' },
+            { r: 38*SCALE, score: 8, img: '4.png', color: '#F06292', name: '栗子' },
+            { r: 46*SCALE, score: 16, img: '5.png', color: '#EC407A', name: '小桃' },
+            { r: 56*SCALE, score: 22, img: '6.png', color: '#E91E63', name: '師傅' },
+            { r: 66*SCALE, score: 28, img: '7.png', color: '#D81B60', name: '古本' },
+            { r: 80*SCALE, score: 36, img: '8.png', color: '#C2185B', name: '小八' },
+            { r: 92*SCALE, score: 45, img: '9.png', color: '#AD1457', name: '兔兔' },
+            { r: 108*SCALE, score: 55, img: '10.png', color: '#880E4F', name: '吉伊' },
+            { r: 128*SCALE, score: 70, img: '11.png', color: '#4A148C', name: '全體' }
+        ]
+    };
+
+    const { Engine, Runner, World, Bodies, Body, Events, Composite } = Matter;
+    let engine, world, runner, canvas, ctx, currentScore = 0, currentBody = null, isGameOver = false, images = {};
+    
+    // --- 新增變數 ---
+    let gameOverTimer = 0; 
+
+    function preload(callback) {
+        let loaded = 0;
+        CONF.levels.forEach(lvl => {
+            const img = new Image();
+            img.onload = () => { images[lvl.img] = img; loaded++; if(loaded === CONF.levels.length) callback(); };
+            img.onerror = () => { images[lvl.img] = null; loaded++; if(loaded === CONF.levels.length) callback(); };
+            img.src = lvl.img;
+        });
+    }
+
+    function init() {
+        canvas = document.getElementById('game-canvas');
+        canvas.width = CONF.width; canvas.height = CONF.height;
+        ctx = canvas.getContext('2d');
+        engine = Engine.create(); world = engine.world;
+        world.gravity.y = 1.5;
+
+        World.add(world, [
+            Bodies.rectangle(CONF.width/2, CONF.height+25, CONF.width, 50, { isStatic: true, friction: 0.1 }),
+            Bodies.rectangle(-25, CONF.height/2, 50, CONF.height, { isStatic: true }),
+            Bodies.rectangle(CONF.width+25, CONF.height/2, 50, CONF.height, { isStatic: true })
+        ]);
+
+        Events.on(engine, 'collisionStart', handleMerge);
+        runner = Runner.create(); Runner.run(runner, engine);
+        requestAnimationFrame(draw);
+        spawn();
+
+        const input = (clientX) => {
+            if(isGameOver || !currentBody) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = (clientX - rect.left) * (CONF.width / rect.width);
+            const r = currentBody.imageData.r;
+            Body.setPosition(currentBody, { x: Math.max(r, Math.min(CONF.width-r, x)), y: 55 });
+            Body.setStatic(currentBody, false);
+            currentBody = null;
+            setTimeout(spawn, 800);
+        };
+        canvas.addEventListener('mousedown', e => input(e.clientX));
+        canvas.addEventListener('touchstart', e => { e.preventDefault(); input(e.touches[0].clientX); });
+    }
+
+    // --- 修改後的繪圖與判定邏輯 ---
+    function draw() {
+        if(isGameOver) return;
+        ctx.clearRect(0, 0, CONF.width, CONF.height);
+        
+        let isAnyBodyInDanger = false;
+
+        Composite.allBodies(world).forEach(body => {
+            if(!body.imageData) return;
+            const { r, img, color, name } = body.imageData;
+            ctx.save();
+            ctx.translate(body.position.x, body.position.y);
+            ctx.rotate(body.angle);
+            
+            if(images[img]) {
+                ctx.drawImage(images[img], -r, -r, r*2, r*2);
+            } else {
+                ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2);
+                ctx.fillStyle = color; ctx.fill();
+                ctx.fillStyle = 'white'; ctx.textAlign = 'center';
+                ctx.font = `${r/2}px Arial`; ctx.fillText(name, 0, r/4);
+            }
+            ctx.restore();
+
+            // 檢查是否超過紅線且速度緩慢（代表堆積住了）
+            if(!body.isStatic && body !== currentBody && body.position.y < CONF.limitY && Math.abs(body.velocity.y) < 0.1) {
+                isAnyBodyInDanger = true;
+            }
+        });
+
+        // --- 處理紅線與判定 ---
+        ctx.beginPath();
+        ctx.moveTo(0, CONF.limitY); ctx.lineTo(CONF.width, CONF.limitY);
+        if (isAnyBodyInDanger) {
+            gameOverTimer++;
+            // 閃爍效果：每 200ms 切換顏色
+            ctx.strokeStyle = (Math.floor(Date.now() / 200) % 2 === 0) ? 'red' : 'transparent';
+            ctx.lineWidth = 4;
+        } else {
+            gameOverTimer = 0; // 重置
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.3)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 如果在危險區待超過 180 幀 (約 3 秒) 就結束
+        if(gameOverTimer > 180) {
+            isGameOver = true;
+            document.getElementById('end-screen').style.display = 'flex';
+            document.getElementById('final-score').innerText = currentScore;
+        }
+
+        requestAnimationFrame(draw);
+    }
+
+    function spawn() {
+        if(isGameOver) return;
+        const idx = Math.floor(Math.random() * 3);
+        const config = CONF.levels[idx];
+        currentBody = Bodies.circle(CONF.width/2, 55, config.r * 0.95, { isStatic: true, friction: 0.1 });
+        currentBody.imageData = { ...config };
+        World.add(world, currentBody);
+    }
+
+    function handleMerge(event) {
+        event.pairs.forEach(pair => {
+            const a = pair.bodyA, b = pair.bodyB;
+            if(a.imageData && b.imageData && a.imageData.level === b.imageData.level && a.imageData.level < 10) {
+                if(a.isMerging || b.isMerging) return;
+                a.isMerging = b.isMerging = true;
+                const nextIdx = a.imageData.level + 1;
+                const config = CONF.levels[nextIdx];
+                currentScore += config.score;
+                document.getElementById('score-board').innerText = "分數: " + currentScore;
+                const newBody = Bodies.circle((a.position.x+b.position.x)/2, (a.position.y+b.position.y)/2, config.r*0.95);
+                newBody.imageData = { ...config, level: nextIdx };
+                World.remove(world, [a, b]); World.add(world, newBody);
+            }
+        });
+    }
+
+    CONF.levels.forEach((l, i) => l.level = i);
+    preload(init);
+</script>
+</body>
+</html>
